@@ -10,11 +10,13 @@ import utime
 from collections import OrderedDict
 from machine import Timer, Pin
 import uasyncio as asyncio
-from nvs import get_product_id, product_key, clear_wifi_credentials, store_pid
-from gpio import R1,R2,R3,S_Led
+from nvs import get_product_id, product_key, clear_wifi_credentials, store_pid, nvs
+from gpio import R1,R2,R3,S_Led, curtain_open, curtain_close
 
 
 client = None
+curtain_task = None
+action = None
 product_id = get_product_id()
 mqtt_client = 0
 
@@ -43,9 +45,30 @@ def hardReset():
             print("Hard reset published to MQTT broker.")
         except Exception as e:
             print(f"Failed to publish hard reset message: {e}")
+            
+def save_curtain_action(action):
+    try:
+        nvs.set_blob("curtain_action", action.encode())
+        nvs.commit()
+        print(f"Saved curtain action to NVS: {action}")
+    except Exception as e:
+        print("Failed to save curtain action:", e)
+        
+def load_curtain_action():
+    try:
+        buf = bytearray(10)
+        length = nvs.get_blob("curtain_action", buf)
+        action = buf[:length].decode()
+        print(f"Loaded curtain action from NVS: {action}")
+        return action
+    except:
+        print("No curtain action saved in NVS.")
+        return None
 
 #MQTT callback
 def mqtt_callback(topic, msg):
+    global curtain_task
+    global action
     topic_str = topic.decode()
     print(f"Received from {topic_str}: {msg.decode()}")
 
@@ -53,23 +76,27 @@ def mqtt_callback(topic, msg):
         try:
             data = ujson.loads(msg)
 
-            if "action" in data and data["action"] == "doubleGate":
-                print("received payload: {}".format(data))
-                R2.value(1)
-                R3.value(1)
-                time.sleep_ms(600)
-                R2.value(0)
-                R3.value(0)
-                status_msg = ujson.dumps({"action": "doubleGate"})
-                client.publish(TOPIC_CURRENT_STATUS, status_msg)
-            
-            if "action" in data and data["action"] == "singleGate":
-                print("received payload: {}".format(data))
-                R1.value(1)  
-                time.sleep_ms(600)
-                R1.value(0)  
-                status_msg = ujson.dumps({"action": "singleGate"})
-                client.publish(TOPIC_CURRENT_STATUS, status_msg)
+            action = data.get("curtain_action")
+            if action:
+                print(f"received payload: {data}")
+
+                if curtain_task and not curtain_task.done():
+                    print("Cancelling previous curtain task")
+                    curtain_task.cancel()
+                    R1.value(0)
+                    R3.value(0)
+                    
+                save_curtain_action(action)
+
+                if action == "open":
+                    curtain_task = asyncio.create_task(curtain_open())
+                elif action == "close":
+                    curtain_task = asyncio.create_task(curtain_close())
+                elif action == "pause":
+                    R1.value(0)
+                    R3.value(0)
+
+                client.publish(TOPIC_CURRENT_STATUS, ujson.dumps({"curtain_action": f"{action}"}))
 
         except ValueError as e:
             print("Error parsing JSON:", e)
@@ -79,8 +106,14 @@ def mqtt_callback(topic, msg):
             data = ujson.loads(msg)
             print("received payload: {}".format(data))
             if "request" in data and data["request"] == "getCurrentStatus":
-                status_msg = ujson.dumps({"action": ""})
-                client.publish(TOPIC_CURRENT_STATUS, status_msg)
+                last_action = load_curtain_action()
+                if last_action:
+                    print(f"Last known curtain action: {last_action}")
+                    status_msg = ujson.dumps({"curtain_action": f"{last_action}"})
+                    client.publish(TOPIC_CURRENT_STATUS, status_msg)
+                else:
+                    status_msg = ujson.dumps({"curtain_action":" "})
+                    client.publish(TOPIC_CURRENT_STATUS, status_msg)         
 
         except ValueError as e:
             print("Error parsing JSON:", e)
@@ -204,3 +237,4 @@ async def mqtt_keepalive():
             print("MQTT Keep-Alive failed:", e)
             await reconnect_mqtt()
         await asyncio.sleep(MQTT_KEEPALIVE // 2)
+        

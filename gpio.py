@@ -10,7 +10,7 @@ import ujson
 import usocket as socket
 import ntptime
 import time
-
+import uasyncio as asyncio
 
 
 # Pin Setup
@@ -26,6 +26,24 @@ Rst = Pin(32, Pin.IN, Pin.PULL_UP)
 press_start_time = None
 debounce_timer = Timer(2)
 reset_timer = Timer(1)
+
+async def curtain_open():
+    print("Opening curtain...")
+    R1.value(1)
+    R3.value(0)
+    await asyncio.sleep(15)
+    R1.value(0)
+    R3.value(0)
+    print("Curtain open complete")
+
+async def curtain_close():
+    print("Closing curtain...")
+    R1.value(0)
+    R3.value(1)
+    await asyncio.sleep(15)
+    R1.value(0)
+    R3.value(0)
+    print("Curtain close complete")
 
 def http_server_led():
     S_Led.value(1)
